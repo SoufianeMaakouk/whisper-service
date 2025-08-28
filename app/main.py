@@ -1,5 +1,6 @@
 # app/main.py
 import base64
+import tempfile
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import openai
@@ -23,21 +24,33 @@ async def root():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    audio_buffer = bytearray()
+
     try:
         while True:
-            # Receive audio chunk (Base64 string)
+            # Receive base64 audio chunk from frontend
             message = await websocket.receive_text()
             audio_bytes = base64.b64decode(message)
+            audio_buffer.extend(audio_bytes)
 
-            # Send to Whisper (streaming in chunks)
-            transcript = openai.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_bytes
-            )
-            text = transcript.text
+            # 🔑 For now: process when buffer is large enough
+            if len(audio_buffer) > 16000 * 2 * 5:  # ~5 seconds of 16kHz PCM16
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp.write(audio_buffer)
+                    tmp.flush()
 
-            # Send transcription back to frontend
-            await websocket.send_text(text)
+                    # Send complete file to Whisper
+                    with open(tmp.name, "rb") as f:
+                        transcript = openai.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=f
+                        )
+
+                    text = transcript.text
+                    await websocket.send_text(text)
+
+                # Reset buffer after sending
+                audio_buffer = bytearray()
 
     except Exception as e:
         print("WebSocket error:", e)
